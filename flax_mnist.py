@@ -1,7 +1,5 @@
 ## Load the MNIST dataset
 
-import tensorflow_datasets as tfds
-import tensorflow as tf
 
 tf.random.set_seed(0) # For reproducibility
 
@@ -9,28 +7,52 @@ train_steps = 1200
 eval_every = 200
 batch_size = 32
 
-train_ds: tf.data.Dataset = tfds.load('mnist', split='train')
-test_ds: tf.data.Dataset = tfds.load('mnist', split='test')
 
-train_ds = train_ds.map(
-    lambda sample: {
-        'image': tf.cast(sample['image'], tf.float32) / 255, # 0~255 범위를 가지는 정수형 텐서인 픽셀 값을 255로 나누어 0~1 범위로 정규화
-        'label': sample['label'], 
-    }
-) # normalize train set
+## pytorch data loader 사용
+## pytorch를 쓴다는 것은 아니고, pytorch data loader가 간편하기 때문
+# => jax.numpy.array()로 사용해서 
+import numpy as np
+from jax.tree_util import tree_map
+from torch.utils import data
+from torchvision.datasets import MNIST
 
-test_ds = test_ds.map(
-    lambda sample: {
-        'image': tf.cast(sample['image'], tf.float32) / 255,
-        'label': sample['label'],
-    }
-) # normalize test set
+# def numpy_collate(batch):
+#   return tree_map(np.asarray, data.default_collate(batch))
 
-# create a shuffled dataset by allocating a buffersize of 1024 randomly draw elemnts from.
-train_ds = train_ds.repeat().shuffle(1024)
-# Group into batches of 'batch_size' and skip incomplete batches, prefetch the next sample to improve latency.
-train_ds = train_ds.batch(batch_size, drop_remainder = True).take(train_steps).prefetch(1)
-test_ds = test_ds.batch(batch_size, drop_remainder = True).prefetch(1)
+# class NumpyLoader(data.DataLoader):
+#   def __init__(self, dataset, batch_size=1,
+#                 shuffle=False, sampler=None,
+#                 batch_sampler=None, num_workers=0,
+#                 pin_memory=False, drop_last=False,
+#                 timeout=0, worker_init_fn=None):
+#     super(self.__class__, self).__init__(dataset,
+#         batch_size=batch_size,
+#         shuffle=shuffle,
+#         sampler=sampler,
+#         batch_sampler=batch_sampler,
+#         num_workers=num_workers,
+#         collate_fn=numpy_collate,
+#         pin_memory=pin_memory,
+#         drop_last=drop_last,
+#         timeout=timeout,
+#         worker_init_fn=worker_init_fn)
+
+# class FlattenAndCast(object):
+#   def __call__(self, pic):
+#     return np.ravel(np.array(pic, dtype=jnp.float32))
+# Define our dataset, using torch datasets
+
+mnist_dataset = MNIST('/tmp/mnist/', download=True, transform=FlattenAndCast())
+training_generator = NumpyLoader(mnist_dataset, batch_size=batch_size, num_workers=0)
+
+# Get the full train dataset (for checking accuracy while training)
+train_images = np.array(mnist_dataset.train_data).reshape(len(mnist_dataset.train_data), -1)
+train_labels = one_hot(np.array(mnist_dataset.train_labels), n_targets)
+
+# Get full test dataset
+mnist_dataset_test = MNIST('/tmp/mnist/', download=True, train=False)
+test_images = jnp.array(mnist_dataset_test.test_data.numpy().reshape(len(mnist_dataset_test.test_data), -1), dtype=jnp.float32)
+test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
 
 
 ## Define the model with Flax NNX
@@ -115,7 +137,7 @@ metrics_history = {
     'test_accuracy': [],
 }
 
-for step, batch in enumerate(train_ds.as_numpy_iterator()):
+for step, batch in enumerate(train_ds.as_numpy_iterator()): # training generator로 사용 (pytorch data loader 버전) - training_generator
     # Run the optimization for one step and make a stateful update for
     # - the train state's model parameters
     # - the optimizer state
