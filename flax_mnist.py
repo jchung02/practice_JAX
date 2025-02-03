@@ -1,7 +1,7 @@
 ## Load the MNIST dataset
 
 
-train_steps = 1200
+train_steps = 1800
 eval_every = 200
 batch_size = 32
 
@@ -157,7 +157,8 @@ for step, batch in enumerate(iter(train_loader)): # training generator로 사용
     
     if step > 0 and (step % eval_every == 0 or step == train_steps - 1): # 1 에폭마다
         # log the training metrics
-        for metric, value in metrics.compute().items():
+        train_results = metrics.compute()
+        for metric, value in train_results.items():
             metrics_history[f'train_{metric}'].append(value)
         metrics.reset()
         
@@ -166,11 +167,19 @@ for step, batch in enumerate(iter(train_loader)): # training generator로 사용
             eval_step(model, metrics, test_batch)
         
         # log the test metrics
-        for metric, value in metrics.compute().items():
+        test_results = metrics.compute()
+        for metric, value in test_results.items():
             metrics_history[f'test_{metric}'].append(value)
         metrics.reset() # reset the metrics for the next training epoch
 
         clear_output(wait=True)
+        
+         # 학습 결과 출력 추가
+        print(f"Step {step}/{train_steps}")
+        print(f"Train Loss: {train_results['loss']:.4f}, Train Accuracy: {train_results['accuracy']:.2%}")
+        print(f"Test Loss: {test_results['loss']:.4f}, Test Accuracy: {test_results['accuracy']:.2%}")
+        print("-" * 50)
+        
         # plot the loss and accuracy in subplots
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
         ax1.set_title('Loss')
@@ -181,7 +190,13 @@ for step, batch in enumerate(iter(train_loader)): # training generator로 사용
         ax1.legend()
         ax2.legend()
         plt.show()
-        
+
+
+# 최종 학습 결과 출력
+print("\n Training Complete!")
+print(f"Final Train Loss: {metrics_history['train_loss'][-1]:.4f}, Final Train Accuracy: {metrics_history['train_accuracy'][-1]:.2%}")
+print(f"Final Test Loss: {metrics_history['test_loss'][-1]:.4f}, Final Test Accuracy: {metrics_history['test_accuracy'][-1]:.2%}")
+
 ## Perform inference on the test set
 
 model.eval() # evaluation mode.
