@@ -1,59 +1,69 @@
 ## Load the MNIST dataset
 
 
-tf.random.set_seed(0) # For reproducibility
-
 train_steps = 1200
 eval_every = 200
 batch_size = 32
 
-
 ## pytorch data loader 사용
 ## pytorch를 쓴다는 것은 아니고, pytorch data loader가 간편하기 때문
-# => jax.numpy.array()로 사용해서 
+
 import numpy as np
+import jax.numpy as jnp
+import torch
+from torch.utils.data import DataLoader, Dataset
+import torchvision.transforms as transforms
+import torchvision
 from jax.tree_util import tree_map
-from torch.utils import data
-from torchvision.datasets import MNIST
 
-# def numpy_collate(batch):
-#   return tree_map(np.asarray, data.default_collate(batch))
+# 1. 데이터 변환 함수 (torch DataLoader를 위한 collate_fn)
+def numpy_collate(batch):
+    """JAX에서 사용 가능하도록 NumPy 배열로 변환 (JAX tensor 변환은 train_step 내부에서)"""
+    return tree_map(np.asarray, torch.utils.data._utils.collate.default_collate(batch))
 
-# class NumpyLoader(data.DataLoader):
-#   def __init__(self, dataset, batch_size=1,
-#                 shuffle=False, sampler=None,
-#                 batch_sampler=None, num_workers=0,
-#                 pin_memory=False, drop_last=False,
-#                 timeout=0, worker_init_fn=None):
-#     super(self.__class__, self).__init__(dataset,
-#         batch_size=batch_size,
-#         shuffle=shuffle,
-#         sampler=sampler,
-#         batch_sampler=batch_sampler,
-#         num_workers=num_workers,
-#         collate_fn=numpy_collate,
-#         pin_memory=pin_memory,
-#         drop_last=drop_last,
-#         timeout=timeout,
-#         worker_init_fn=worker_init_fn)
+# 2. JAX Dataset 클래스
+class JAXMNISTDataset(Dataset):
+    def __init__(self, train=True):
+        self.dataset = torchvision.datasets.MNIST(
+            root='./data', train=train, download=True, transform=transforms.ToTensor()
+        )
 
-# class FlattenAndCast(object):
-#   def __call__(self, pic):
-#     return np.ravel(np.array(pic, dtype=jnp.float32))
-# Define our dataset, using torch datasets
+    def __len__(self):
+        return len(self.dataset)
 
-mnist_dataset = MNIST('/tmp/mnist/', download=True, transform=FlattenAndCast())
-training_generator = NumpyLoader(mnist_dataset, batch_size=batch_size, num_workers=0)
+    def __getitem__(self, idx):
+        image, label = self.dataset[idx]
+        image = np.array(image.numpy(), dtype=np.float32)  # (1, 28, 28)
+        image = np.transpose(image, (1, 2, 0))  # (28, 28, 1)로 변환(채널을 마지막으로)
+        return {
+            'image': image,  # JAX 변환 X (DataLoader에서 처리)
+            'label': np.array(label, dtype=np.int32)
+        }
+        
+# 3. JAX DataLoader (PyTorch의 DataLoader 기반)
+class JAXDataLoader(DataLoader):
+    def __init__(self, dataset, batch_size=32, shuffle=True, drop_last=True):
+        super().__init__(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            drop_last=drop_last,
+            collate_fn=numpy_collate  # NumPy 변환만 수행
+        )
 
-# Get the full train dataset (for checking accuracy while training)
-train_images = np.array(mnist_dataset.train_data).reshape(len(mnist_dataset.train_data), -1)
-train_labels = one_hot(np.array(mnist_dataset.train_labels), n_targets)
+# 4. DataLoader 인스턴스 생성
+train_loader = JAXDataLoader(JAXMNISTDataset(train=True), batch_size=batch_size, shuffle=True)
+test_loader = JAXDataLoader(JAXMNISTDataset(train=False), batch_size=batch_size, shuffle=False)
 
-# Get full test dataset
-mnist_dataset_test = MNIST('/tmp/mnist/', download=True, train=False)
-test_images = jnp.array(mnist_dataset_test.test_data.numpy().reshape(len(mnist_dataset_test.test_data), -1), dtype=jnp.float32)
-test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
+# 5. 데이터 확인 (NumPy 형식 유지)
+train_batch = next(iter(train_loader))
+print(type(train_batch['image']), type(train_batch['label']))  # numpy.ndarray 확인
+print(train_batch['image'].shape, train_batch['label'].shape)  # (32, 1, 28, 28), (32,)
 
+# 6. train_step() 호출 전에 JAX 변환
+def prepare_batch(batch):
+    """JAX 모델에 넣기 전에 np.array -> jnp.array 변환"""
+    return {k: jnp.array(v) for k, v in batch.items()}
 
 ## Define the model with Flax NNX
 
@@ -108,7 +118,7 @@ metrics = nnx.MultiMetric(
 ## Define training step functions
 def loss_fn(model: CNN, batch):
     logits = model(batch['image']) # 모델에 이미지 배치를 입력하여 로짓(logits) 계산
-    loss = optax.softmax_cross_entropy_with_integer_labels(
+    loss = optax.softmax_cross_entropy_with_integer_labels( # jnp.int32 를 요구
         logits = logits, labels = batch['label']
     ).mean() # 배치 내 모든 샘플의 손실 값을 평균
     return loss, logits
@@ -137,12 +147,12 @@ metrics_history = {
     'test_accuracy': [],
 }
 
-for step, batch in enumerate(train_ds.as_numpy_iterator()): # training generator로 사용 (pytorch data loader 버전) - training_generator
+for step, batch in enumerate(iter(train_loader)): # training generator로 사용 (pytorch data loader 버전) - training_generator
     # Run the optimization for one step and make a stateful update for
     # - the train state's model parameters
     # - the optimizer state
     # - the training loss and accuracy batch metrics
-    
+    batch = prepare_batch(batch)  # JAX 모델에 넣기 전에 jnp 변환
     train_step(model, optimizer, metrics, batch)
     
     if step > 0 and (step % eval_every == 0 or step == train_steps - 1): # 1 에폭마다
@@ -152,7 +162,7 @@ for step, batch in enumerate(train_ds.as_numpy_iterator()): # training generator
         metrics.reset()
         
         # compute the metrics on the test set after each training epoch
-        for test_batch in test_ds.as_numpy_iterator():
+        for test_batch in iter(test_loader):
             eval_step(model, metrics, test_batch)
         
         # log the test metrics
@@ -181,7 +191,7 @@ def pred_step(model: CNN, batch):
   logits = model(batch['image'])
   return logits.argmax(axis=1)
 
-test_batch = test_ds.as_numpy_iterator().next()
+test_batch = next(iter(test_loader))
 pred = pred_step(model, test_batch)
 
 fig, axs = plt.subplots(5, 5, figsize=(12, 12))
